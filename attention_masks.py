@@ -106,6 +106,7 @@ class BaseAttentionMask:
         self.masks                = []
         
         self.num_regions          = 0
+        self.skip_self_attn_indices = set()
         
         self.attn_mask            = None
         self.mask_type            = mask_type
@@ -196,7 +197,7 @@ class FullAttentionMask(BaseAttentionMask):
         #cross_self_mask = torch.zeros((t*img_len, t*img_len), dtype=torch.float16)
         
         prev_len = 0
-        for context_len, mask in zip(self.context_lens, self.masks):
+        for region_idx, (context_len, mask) in enumerate(zip(self.context_lens, self.masks)):
             
             img2txt_mask    = F.interpolate(mask.unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, context_len)
             img2txt_mask_sq = F.interpolate(mask.unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
@@ -207,21 +208,22 @@ class FullAttentionMask(BaseAttentionMask):
             attn_mask[prev_len:curr_len, text_len:        ] = img2txt_mask.transpose(-1, -2).repeat(1,t)  # cross            TXT 2 regional IMG    # txt2img_mask
             attn_mask[text_off:        , prev_len:curr_len] = img2txt_mask.repeat(t,1)                    # cross   regional IMG 2 TXT
 
-            attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1, -2).repeat(t,t))) # img2txt_mask_sq, txt2img_mask_sq
+            if region_idx not in self.skip_self_attn_indices:
+                attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1, -2).repeat(t,t))) # img2txt_mask_sq, txt2img_mask_sq
             
             #cross_self_mask[:,:] = fp_or(cross_self_mask, fp_and(img2txt_mask_sq.repeat(t,t), (1-img2txt_mask_sq).transpose(-1, -2).repeat(t,t)))
             
             prev_len = curr_len
             
-        if self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked")) and 0 not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[0].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
         
-        if self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked")) and (len(self.masks) - 1) not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[-1].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
             
-        if self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked"):
+        if (self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked")) and 1 not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[1].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
             
@@ -298,28 +300,29 @@ class FullAttentionMaskHiDream(BaseAttentionMask):
         attn_mask = torch.zeros((text_off+t*img_len, text_len+t*img_len), dtype=dtype)
         reg_num  = 0
         prev_len = 0
-        for context_len, mask in zip(self.context_lens, self.masks):
+        for region_idx, (context_len, mask) in enumerate(zip(self.context_lens, self.masks)):
 
             img2txt_mask_sq = F.interpolate(mask.unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
 
             curr_len = prev_len + context_len
             
-            attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1,-2).repeat(t,t))) # img2txt_mask_sq, txt2img_mask_sq
+            if region_idx not in self.skip_self_attn_indices:
+                attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1,-2).repeat(t,t))) # img2txt_mask_sq, txt2img_mask_sq
             
             prev_len = curr_len
             reg_num += 1
         
         self.self_attn_mask = attn_mask[text_off:, text_len:].clone()
         
-        if self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked")) and 0 not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[0].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
         
-        if self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked")) and (len(self.masks) - 1) not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[-1].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
             
-        if self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked"):
+        if (self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked")) and 1 not in self.skip_self_attn_indices:
             img2txt_mask_sq = F.interpolate(self.masks[1].unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, img_len)
             attn_mask[text_off:, text_len:] = fp_or(attn_mask[text_off:, text_len:], img2txt_mask_sq)
         
@@ -674,7 +677,7 @@ class SplitAttentionMask(BaseAttentionMask):
     
         prev_len = 0
         self_masks = []
-        for context_len, mask in zip(self.context_lens, self.masks):
+        for region_idx, (context_len, mask) in enumerate(zip(self.context_lens, self.masks)):
 
             cross_mask, self_mask = None, None
             if mask.ndim == 6:
@@ -727,20 +730,21 @@ class SplitAttentionMask(BaseAttentionMask):
                 img2txt_mask_sq = F.interpolate(     mask.unsqueeze(0).to(torch.float16), (h, w), mode='nearest-exact').to(dtype).flatten().unsqueeze(1).repeat(1, t_mask * img_len)
             self_masks.append(img2txt_mask_sq)
             
-            if t_mask > 1:
-                self_attn_mask = fp_or(self_attn_mask, fp_and(img2txt_mask_sq, img2txt_mask_sq.transpose(-1,-2)))
-            else:
-                self_attn_mask = fp_or(self_attn_mask, fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1,-2)).repeat(t,t))
+            if region_idx not in self.skip_self_attn_indices:
+                if t_mask > 1:
+                    self_attn_mask = fp_or(self_attn_mask, fp_and(img2txt_mask_sq, img2txt_mask_sq.transpose(-1,-2)))
+                else:
+                    self_attn_mask = fp_or(self_attn_mask, fp_and(img2txt_mask_sq.repeat(t,t), img2txt_mask_sq.transpose(-1,-2)).repeat(t,t))
             
             prev_len = curr_len
 
-        if self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_masked") or self.mask_type.endswith("_A") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_A,unmasked")) and 0 not in self.skip_self_attn_indices:
             self_attn_mask = fp_or(self_attn_mask, self_masks[0])
         
-        if self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked"):
+        if (self.mask_type.endswith("_unmasked") or self.mask_type.endswith("_C") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_AC") or self.mask_type.endswith("_B,unmasked") or self.mask_type.endswith("_A,unmasked")) and (len(self_masks) - 1) not in self.skip_self_attn_indices:
             self_attn_mask = fp_or(self_attn_mask, self_masks[-1])
             
-        if self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked"):
+        if (self.mask_type.endswith("_B") or self.mask_type.endswith("_AB") or self.mask_type.endswith("_BC") or self.mask_type.endswith("_B,unmasked")) and 1 not in self.skip_self_attn_indices:
             self_attn_mask = fp_or(self_attn_mask, self_masks[1])
             
         if   self.edge_width > 0:

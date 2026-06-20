@@ -1510,6 +1510,11 @@ class ClownRegionalConditioning_ABC:
                 AttnMask.add_region(conditioning_B[0][0], mask_B)
                 AttnMask.add_region(conditioning_C[0][0], mask_AB_inv)
             
+            # Region C (background) participates in cross-attention only.
+            # Without this, a full-image background mask makes the self-attention
+            # mask all-ones, destroying character isolation between regions A and B.
+            AttnMask.skip_self_attn_indices.add(AttnMask.num_regions - 1)
+            
             RegContext.add_region(conditioning_A[0][0], conditioning_A[0][1].get('pooled_output'))
             RegContext.add_region(conditioning_B[0][0], conditioning_B[0][1].get('pooled_output'))
             RegContext.add_region(conditioning_C[0][0], conditioning_C[0][1].get('pooled_output'))
